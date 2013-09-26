@@ -1,8 +1,6 @@
 LC_Project
 ==========
 
-LC_Project
-
 We're going to build this project as a set of modules. Our main workflow will be in
 
 * lc_main.py
