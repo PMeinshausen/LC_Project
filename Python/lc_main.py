@@ -12,8 +12,8 @@ import os
 
 
 # Set working directory (comment out whichever you're not currently using)
-os.chdir('c:/Users/SchaunW/Dropbox/GitHub/LC_Project/Python/') # Windows
-#os.chdir('~/Dropbox/GitHub/LC_Project/Python/') # OS X
+os.chdir('c:/Users/SchaunW/Dropbox/Code/GitHub/LC_Project/Python/') # Windows
+#os.chdir('~/Dropbox/Code//GitHub/LC_Project/Python/') # OS X
 
 # Scripts
 import lc_data
