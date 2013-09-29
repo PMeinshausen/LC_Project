@@ -4,15 +4,25 @@
 # Load modules and custom functions
 #-----------------------------------------------------------------------------#
 
-import os
 import numpy as np
 import pandas as pd
 import re
+import nltk
+import sklearn.feature_extraction as sk_fe
 
-def lc_data_import(lc_end_file, lc_monthly_file, wd = ''):
+#-----------------------------------------------------------------------------#
+# Convert percentages formatted as strings into floats
+#-----------------------------------------------------------------------------#
 
-    def percent_to_float(x):
-        return(float(re.sub('[^0-9.]', '', x)) / 100)
+def percent_to_float(x):
+    return(float(re.sub('[^0-9.]', '', x)) / 100)
+
+#-----------------------------------------------------------------------------#
+# Import lc data and correctly format/merge
+#-----------------------------------------------------------------------------#
+
+def data_import(lc_end_file, lc_monthly_file, wd = ''):
+
 
     if wd != '':
         wd = re.sub('(.*?)/?$', '\\1/', wd)
@@ -235,8 +245,137 @@ def lc_data_import(lc_end_file, lc_monthly_file, wd = ''):
     
     lc_all = lc_all.drop(["loan_status", "earliest_cr_line", "n_months", 
                           "total_paid", "id"], 1)
-                          
+    
+    lc_all.index = range(lc_all.shape[0])
+                      
     return(lc_all)
+
+#-----------------------------------------------------------------------------#
+# Clean a text column for text mining
+#-----------------------------------------------------------------------------#
+
+def clean_text(text, regex = [], remove_punct = True, remove_percents = True,
+               remove_currency = True, remove_numbers = True, to_lower = True, 
+               stem = True):
+
+    text_original = text    
+    
+    if len(regex) == 2:
+        
+        text = text.str.findall(regex[0])
+        text = text[map(lambda x: len(x) > 0, text)]
+        text = text.apply(
+            lambda x: np.unique(map(lambda y: pd.to_datetime(y[1]), x)))
+        text = text.apply(lambda x: np.delete(x, x.argmin()))
+        text = text[map(lambda x: len(x) > 0, text)]
+        text = text.apply(lambda x: x[0].strftime('%m/%d/%y'))
+        
+        for i in range(len(text)):
+            text_original[text.index[i]] = re.sub(
+                regex[1] + text.iloc[i] + '.*', '', 
+                text_original[text.index[i]])
+        
+        text_original = text_original.apply(lambda x: re.sub(regex[0], '', x))
+        text_original = text_original.apply(lambda x: re.sub(r'<.*?>', ' ', x))
+
+    if remove_percents:    
+        text_original = text_original.apply(
+            lambda x: re.sub(r'\d+([.,]\d+)?%', ' ', x))
+
+    if remove_currency:    
+        text_original = text_original.apply(
+            lambda x: re.sub(r'\$\d+([.,]\d+)?\b(?!\s+dollar)', ' ', x))
+        text_original = text_original.apply(
+            lambda x: re.sub(r'\d+([.,]\d+)?\s+dollar', ' ', x))
+
+    if remove_punct:
+        text_original = text_original.apply(
+            lambda x: re.sub(r'[^\w\s]', ' ', x))
+
+    if remove_numbers:
+        text_original = text_original.apply(
+            lambda x: re.sub(r'\d', ' ', x))
+        
+    if to_lower:
+        text_original = text_original.str.lower()
+    
+    if stem:
+        text_original = text_original.apply(
+            lambda x: ' '.join(map(
+                nltk.stem.PorterStemmer().stem, x.lower().split())))
+    
+    return(text_original)
+
+#-----------------------------------------------------------------------------#
+# Create term-document matrices for all supplied columns
+#-----------------------------------------------------------------------------#
+    
+def make_tdms(text_fields, count_words = True, count_percents = True, 
+              count_currency = True, set_min_df = 1, set_ngram_range = (1,1)):
+
+    tdms = {}
+    
+    for j in range(text_fields.shape[1]):
+        
+        if count_words:
+            n_words = text_fields.iloc[:,j].str.count(r'\b\w+\b')
+            n_words.index = range(text_fields.shape[0])
+        else:
+            n_words = 0
+            
+        if count_percents:        
+            n_percents = text_fields.iloc[:,j].str.count(r'\d+([.,]\d+)?%')
+            n_percents.index = range(text_fields.shape[0])
+        else:
+            n_percents = 0
+            
+        if count_currency:
+            n_currency = text_fields.iloc[:,j].str.count(r'\$\d+|\d+\s+dollar', 
+                re.IGNORECASE)
+            n_currency.index = range(text_fields.shape[0])
+        else:
+            n_currency = 0
+        
+        if text_fields.columns[j] == 'desc':
+            use_regex = [
+            r'(\d+|Borrower)\s+added\s+on\s+(\d{2}/\d{2}/\d{2})\s+>',
+            r'(\d+|Borrower)\s+added\s+on\s+']    
+        else:
+            use_regex = []
+        
+        cleaned_text = clean_text(text_fields.iloc[:,j], 
+            regex = use_regex)
+    
+        vectorizer = sk_fe.text.CountVectorizer(
+            ngram_range = set_ngram_range, stop_words = 'english', 
+            min_df = int(set_min_df))
+        tdm = vectorizer.fit_transform(cleaned_text.tolist()).toarray()
+        tdm_colnames = np.array(vectorizer.get_feature_names())
+        
+        transformer = sk_fe.text.TfidfTransformer()
+        tdm = transformer.fit_transform(tdm).toarray()
+        
+        tdm = pd.DataFrame(tdm, columns = tdm_colnames)
+        tdm.columns = text_fields.columns.values[j] + '__' + tdm.columns.values
+        
+        if count_words:        
+            tdm[text_fields.columns.values[j] + '__n_words'] = n_words
+    
+        if count_percents & sum(n_percents) > 0:
+            tdm[text_fields.columns.values[j] + '__n_percents'] = n_percents
+            
+        if count_currency & sum(n_currency) > 0:
+            tdm[text_fields.columns.values[j] + '__n_currency'] = n_currency
+    
+        tdms[text_fields.columns.values[j] + '_tdm'] = tdm
+
+    return(tdms)
+
+
+
     
 if __name__ == '__main__':
-    lc_data_import()
+    data_import()
+    percent_to_float()
+    clean_text()
+    make_tdms()
