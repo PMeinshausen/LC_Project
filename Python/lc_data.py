@@ -15,21 +15,30 @@ import sklearn.feature_extraction as sk_fe
 class LC_Data(object):
     """This class represents a Lending Club dataset."""
 
-    def __init__(self, lc_end_file="LoanStatsNew.csv", lc_monthly_file="Pmthist All Loans Version 20130416.csv", wd = ''):
-        """Initial import of lc data."""
-        self._end_file = lc_end_file
-        self._monthly_file = lc_monthly_file
-        self._wd = wd
+    def __init__(self):
+        self.dataset = pd.DataFrame()
+        self._end_file = ''
+        self._monthly_file = ''
+        self._wd = ''
 
     def __str__(self):
         """Returns the string representation of the dataset."""
         return "Main data file: " + self._end_file + " " \
         + "Monthly data file: " + self._monthly_file
 
-    def data_import(self):
+    def data_import(self, 
+                    lc_end_file = "LoanStatsNew.csv", 
+                    lc_monthly_file = "Pmthist All Loans Version 20130416.csv",
+                    wd = ''):
+        
         """Imports Lending Club data and correctly formats and merges it"""
+
+        self._end_file = lc_end_file
+        self._monthly_file = lc_monthly_file
+        self._wd = wd
+        
         if self._wd != '':
-            self._wd = re.sub('(.*?)/?$', '\\1/', wd)
+            self._wd = re.sub('(.*?)/?$', '\\1/', self._wd)
 
         """Load data and keep relevant columns"""
 
@@ -173,21 +182,23 @@ class LC_Data(object):
         lc_mon.columns = map(lambda x: x.lower(), lc_mon.columns.values)
 
         """
-        ---------------------------------------------------------------------------
+        -----------------------------------------------------------------------
         Organize and Format self._end_file
-        ---------------------------------------------------------------------------
+        -----------------------------------------------------------------------
         """
 
         """ Custom format dates, percentages, etc. """
         lc_end.issue_d = pd.to_datetime(lc_end.issue_d)
         lc_end.earliest_cr_line = pd.to_datetime(lc_end.earliest_cr_line)
-        lc_end.int_rate = lc_end.int_rate.apply(percent_to_float)
-        lc_end.apr = lc_end.apr.apply(percent_to_float)
+        lc_end.int_rate = lc_end.int_rate.apply(
+            lambda x: float(re.sub('[^0-9.]', '', x)) / 100)
+        lc_end.apr = lc_end.apr.apply(
+            lambda x: float(re.sub('[^0-9.]', '', x)) / 100)
         lc_end.term = lc_end.term.apply(lambda x: int(re.sub('\\D', '', x)))
         lc_end['years_since_earliest_cr_line'] = \
             (lc_end.issue_d - lc_end.earliest_cr_line)
         lc_end.years_since_earliest_cr_line = map(
-            lambda x: float(x / (8.64e13)) / 365, # 8.64e13 nanoseconds in 1 minute
+            lambda x: float(x / (8.64e13)) / 365, # 8.64e13 ns in 1 minute
             lc_end.years_since_earliest_cr_line)
 
         """ Create data frame of missingness indicators """
@@ -252,27 +263,96 @@ class LC_Data(object):
     
         lc_all.index = range(lc_all.shape[0])
 
-        return(lc_all)
+        self.dataset = lc_all
+
+
+    """
+    ---------------------------------------------------------------------------
+    Function to create term-document matrices for all supplied columns.
+    ---------------------------------------------------------------------------
+    """
+    
+    def make_tdms(self, text_fields, count_words = True, 
+                  count_percents = True, count_currency = True, set_min_df = 1, 
+                  set_ngram_range = (1,1), merge_all = True):
+    
+        tdms = {}
+        
+        for texts in text_fields:
+            
+            if count_words:
+                n_words = self.dataset.loc[:,texts].str.count(r'\b\w+\b')
+                n_words.index = range(self.dataset.shape[0])
+            else:
+                n_words = 0
+                
+            if count_percents:        
+                n_percents = self.dataset.loc[:,texts].str.count(
+                    r'\d+([.,]\d+)?%')
+                n_percents.index = range(self.dataset.shape[0])
+            else:
+                n_percents = 0
+                
+            if count_currency:
+                n_currency = self.dataset.loc[:,texts].str.count(
+                    r'\$\d+|\d+\s+dollar', re.IGNORECASE)
+                n_currency.index = range(self.dataset.shape[0])
+            else:
+                n_currency = 0
+            
+            if texts == 'desc':
+                use_regex = [
+                r'(\d+|Borrower)\s+added\s+on\s+(\d{2}/\d{2}/\d{2})\s+>',
+                r'(\d+|Borrower)\s+added\s+on\s+']    
+            else:
+                use_regex = []
+            
+            cleaned_text = clean_text(self.dataset.loc[:,texts], 
+                regex = use_regex)
+        
+            vectorizer = sk_fe.text.CountVectorizer(
+                ngram_range = set_ngram_range, stop_words = 'english', 
+                min_df = int(set_min_df))
+            tdm = vectorizer.fit_transform(cleaned_text.tolist()).toarray()
+            tdm_colnames = np.array(vectorizer.get_feature_names())
+            
+            transformer = sk_fe.text.TfidfTransformer()
+            tdm = transformer.fit_transform(tdm).toarray()
+            
+            tdm = pd.DataFrame(tdm, columns = tdm_colnames)
+            tdm.columns = texts + '__' + tdm.columns.values
+            
+            if count_words:        
+                tdm[texts + '__n_words'] = n_words
+        
+            if count_percents & sum(n_percents) > 0:
+                tdm[texts + '__n_percents'] = n_percents
+                
+            if count_currency & sum(n_currency) > 0:
+                tdm[texts + '__n_currency'] = n_currency
+        
+            tdms[texts + '_tdm'] = tdm
+    
+        if(merge_all):
+            
+            for i in range(len(tdms)):
+                self.dataset = pd.concat(
+                    [self.dataset, tdms[tdms.keys()[i]]], axis = 1)
+            
+        else:
+            
+            self.tdms = tdms
+
 
 """
----------------------------------------------------------------------------
-Function to convert percentages formatted as strings into floats.
----------------------------------------------------------------------------
-"""
-
-def percent_to_float(x):
-    return(float(re.sub('[^0-9.]', '', x)) / 100)
-
-
-"""
----------------------------------------------------------------------------
+-------------------------------------------------------------------------------
 Function to clean a text column for text mining.
----------------------------------------------------------------------------
+-------------------------------------------------------------------------------
 """
-
-def clean_text(text, regex = [], remove_punct = True, remove_percents = True,
-               remove_currency = True, remove_numbers = True, to_lower = True, 
-               stem = True):
+    
+def clean_text(text, regex = [], remove_punct = True, 
+               remove_percents = True, remove_currency = True, 
+               remove_numbers = True, to_lower = True, stem = True):
 
     text_original = text
 
@@ -291,8 +371,10 @@ def clean_text(text, regex = [], remove_punct = True, remove_percents = True,
                 regex[1] + text.iloc[i] + '.*', '', 
                 text_original[text.index[i]])
         
-        text_original = text_original.apply(lambda x: re.sub(regex[0], '', x))
-        text_original = text_original.apply(lambda x: re.sub(r'<.*?>', ' ', x))
+        text_original = text_original.apply(
+            lambda x: re.sub(regex[0], '', x))
+        text_original = text_original.apply(
+            lambda x: re.sub(r'<.*?>', ' ', x))
 
     if remove_percents:    
         text_original = text_original.apply(
@@ -322,83 +404,13 @@ def clean_text(text, regex = [], remove_punct = True, remove_percents = True,
     
     return(text_original)
 
-
-"""
----------------------------------------------------------------------------
-Function to create term-document matrices for all supplied columns.
----------------------------------------------------------------------------
-"""
-
-def make_tdms(text_fields, count_words = True, count_percents = True, 
-              count_currency = True, set_min_df = 1, set_ngram_range = (1,1)):
-
-    tdms = {}
-    
-    for j in range(text_fields.shape[1]):
-        
-        if count_words:
-            n_words = text_fields.iloc[:,j].str.count(r'\b\w+\b')
-            n_words.index = range(text_fields.shape[0])
-        else:
-            n_words = 0
-            
-        if count_percents:        
-            n_percents = text_fields.iloc[:,j].str.count(r'\d+([.,]\d+)?%')
-            n_percents.index = range(text_fields.shape[0])
-        else:
-            n_percents = 0
-            
-        if count_currency:
-            n_currency = text_fields.iloc[:,j].str.count(r'\$\d+|\d+\s+dollar', 
-                re.IGNORECASE)
-            n_currency.index = range(text_fields.shape[0])
-        else:
-            n_currency = 0
-        
-        if text_fields.columns[j] == 'desc':
-            use_regex = [
-            r'(\d+|Borrower)\s+added\s+on\s+(\d{2}/\d{2}/\d{2})\s+>',
-            r'(\d+|Borrower)\s+added\s+on\s+']    
-        else:
-            use_regex = []
-        
-        cleaned_text = clean_text(text_fields.iloc[:,j], 
-            regex = use_regex)
-    
-        vectorizer = sk_fe.text.CountVectorizer(
-            ngram_range = set_ngram_range, stop_words = 'english', 
-            min_df = int(set_min_df))
-        tdm = vectorizer.fit_transform(cleaned_text.tolist()).toarray()
-        tdm_colnames = np.array(vectorizer.get_feature_names())
-        
-        transformer = sk_fe.text.TfidfTransformer()
-        tdm = transformer.fit_transform(tdm).toarray()
-        
-        tdm = pd.DataFrame(tdm, columns = tdm_colnames)
-        tdm.columns = text_fields.columns.values[j] + '__' + tdm.columns.values
-        
-        if count_words:        
-            tdm[text_fields.columns.values[j] + '__n_words'] = n_words
-    
-        if count_percents & sum(n_percents) > 0:
-            tdm[text_fields.columns.values[j] + '__n_percents'] = n_percents
-            
-        if count_currency & sum(n_currency) > 0:
-            tdm[text_fields.columns.values[j] + '__n_currency'] = n_currency
-    
-        tdms[text_fields.columns.values[j] + '_tdm'] = tdm
-
-    return(tdms)
-
-
-
 if __name__ == '__main__':
     d = LC_Data()
     d.data_import()
-    percent_to_float()
-    clean_text()
-    make_tdms()
-
+    d.make_tdms(
+        text_fields = ['emp_name', 'desc', 'purpose', 'title'],
+        set_min_df = round(d.dataset.shape[0] * 0.005),
+        set_ngram_range = (1,4))
 
 
 
