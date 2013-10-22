@@ -29,7 +29,8 @@ class LC_Data(object):
     def data_import(self, 
                     lc_end_file = "LoanStatsNew.csv", 
                     lc_monthly_file = "Pmthist All Loans Version 20130416.csv",
-                    wd = ''):
+                    wd = '',
+                    index = None):
         
         """Imports Lending Club data and correctly formats and merges it"""
 
@@ -262,6 +263,11 @@ class LC_Data(object):
                           "total_paid", "id"], 1)
     
         lc_all.index = range(lc_all.shape[0])
+        
+        if index != None:
+            self.dataset_index = lc_all.loc[:,index]
+        else:
+            self.dataset_index = pd.Series(range(lc_all.shape[0]))
 
         self.dataset = lc_all
 
@@ -342,6 +348,30 @@ class LC_Data(object):
         else:
             
             self.tdms = tdms
+
+    """
+    ---------------------------------------------------------------------------
+    Method to convert string variables to dummies
+    ---------------------------------------------------------------------------
+    """
+    def change_to_dummies(self, drop_variables = None):
+        if(drop_variables != None):       
+            self.dataset_dropped = self.dataset.loc[:, drop_variables]
+            self.dataset = self.dataset.drop(drop_variables, axis = 1)
+            strcols = self.dataset.dtypes.isin([np.dtype('object')])
+            strcols = strcols[strcols].index.values
+    
+        for col in strcols:
+            self.dataset = pd.concat([
+                self.dataset, 
+                pd.get_dummies(
+                    self.dataset.loc[:,col].squeeze(), 
+                    prefix = col, prefix_sep = '__')],
+                axis = 1)
+    
+        self.dataset_dropped = pd.concat(
+            [self.dataset_dropped, self.dataset.loc[:,strcols]])
+        self.dataset = self.dataset.drop(strcols, axis = 1).applymap(float)    
 
 
 """
